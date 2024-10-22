@@ -1,0 +1,30 @@
+---
+title: Random Variable Distribution Functions
+date: '2024-10-10'
+tags: ['math', 'probability']
+draft: false
+summary: 'Measure-theoretic derivation of PDFs of Random Variables'
+---
+
+Most of this stuff is derived from *Probability With Martingales* by Williams. Maybe I'll add other sources too in the coming future. 
+
+# Overview
+
+I've never really had a good intuition for what a random variable really is. In EECS126, we define random variables as $X : \Omega \xrightarrow{} \mathcal{X}$ 
+mappings from our probability space to some set of values $\mathcal{X}$, such that if we define a $\sigma$-algebra on $\mathcal{X}$, then the preimage of every $B \in \Sigma$ is 
+in the $\sigma$-algebra $\mathcal{F}$ of our probability space. Then, the distribution of this random variable is the function $\mu = \mathbb{P} \circ X^{-1}$, which defines a probability measure on 
+$\mathcal{X}$. 
+
+This definition makes sense (and indeed after reading Williams' book aligns with the measure-theoretic formalism of random variables as measurable functions) but is never really used in the class. Also, I have some outstanding questions: 
+* Why is the distribution function a valid probability measure? 
+* Given a distribution, can we construct a corresponding random variable (ie. in 126, we say some random variable is sampled from an exponential distribution, but it's unclear why that RV exists?)
+
+## Measurable Functions 
+Williams' mostly works with real-valued random variables, so I'll be doing the same, but the definitions extend to general measurable spaces. Given a measurable space $(S, \Sigma)$, we define 
+
+**Definition: $\Sigma$-measurable function**: Given $h : S \xrightarrow{} \mathbb{R}$, $h$ is $\Sigma$-measurable if $h^{-1}(A) \in \Sigma, \forall A \in \mathbb{B}$. 
+
+Recall $\mathcal{B}$ is $\mathcal{B}(\mathbb{R})$ the Borel sets on the usual topology on $\mathbb{R}$. 
+
+
+
