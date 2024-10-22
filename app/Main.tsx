@@ -18,7 +18,7 @@ export default function Home({ posts }) {
             {siteMetadata.description}
           </p>
           <p className="text-lg leading-7 text-gray-500 dark:text-gray-400">
-            below are some of my notes 
+            below are some of my notes
           </p>
         </div>
         <ul className="divide-y divide-gray-200 dark:divide-gray-700">

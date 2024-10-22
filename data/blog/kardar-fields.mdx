@@ -1,0 +1,54 @@
+---
+title: Statistical Physics of Particles/Fields
+date: '2024-10-01'
+tags: ['physics', 'solutions']
+draft: false
+summary: 'Notes/Solutions from Kardars books'
+---
+SPP: Statistical Physics of Particles 
+
+SPF: Statistical Physics of Fields 
+##  Chapter 1 
+
+What actually is a field??? Kardar defines an "average deformation field" $u(x)$ as an alternative to the interacting particle model of phonons, with a 
+corresponding velocity field $\partial u/\partial t$. 
+* **Locality** gives us short range interactions between particles, such that we can define a potential energy density $\Phi$ for every $x$, where $V[u] = \int dx \Phi(u(x), \partial u/\partial x, \cdots)$
+* **Translational Symmetry** For a 1-d chain, uniform translation does not change the energy, so the energy density satisfies a periodic $\Phi(u(x) + c) = \Phi(u(x))$. This removes the dependence of $\Phi$ on $u$ itself and only on its derivatives. 
+* **Stability** Looking at equilibrium, we don't want linear terms in $u$ (linearizing everything should mean all particles are stable). Then, quadratic term of $V$ should be pos-definite. 
+
+What potential does this give us? The most general one is of the form 
+
+$V(u) = \int dx[\frac{K}{2} (\frac{\partial u}{\partial x})^2 + \frac{L}{2}(\frac{\partial^2 u}{\partial x^2})^2 + \cdots]$
+
+### Problems 
+**2. (SPF) *Ising model of magnetism***: Hamiltonian for configuration $\{\sigma_i\}$ of spins is 
+$$ 
+\begin{aligned}
+\mathcal{H} = \frac{1}{2} \sum_{i, j = 1}^N J_{ij} \sigma_i \sigma_j - h\sum_i \sigma_i
+\end{aligned}
+$$
+*  Suppose $J_{ij} = -J/N$, so $\mathcal{H} = -\frac{J}{2N} \sum_{i, j = 1}^N  \sigma_i \sigma_j - h\sum_i \sigma_i$. Take the magnetization to be 
+$m = \sum_{i = 1}^N \sigma_i/N = M/N$ (average spin direction), so 
+$$
+\begin{aligned}
+E(M, h) = \langle \mathcal{H} \rangle = \langle -\frac{J}{2N} \sum_{i, j = 1}^N  \sigma_i \sigma_j - h\sum_i \sigma_i\rangle = -N(Jm^2/2 + hm)
+\end{aligned}
+$$
+* The partition function is $Z(h, T) = \sum_{(\sigma_i)} \exp(-\beta \mathcal{H})$, where our sum is over all spin configurations $(\sigma_i)$. However, our Hamiltonian 
+is invariant to specific spin values and only depends on the total net spin, so we can alter our sum to be over the number of positive spins $N_p$, which also fixes a magnetization $M$ such that $\mathcal{H} = E(M, h)$: 
+$$ 
+\begin{aligned}
+Z(h, T) & = \sum_{N_p = 0}^N (\text{ number of configs with Np up spins }) \times \exp(-\beta E(M, h)) \\ 
+        & = \sum_{N_p = 0}^N {N \choose N_p} \exp(-\beta E(M, h)) \\ 
+        & = \sum_{N_p = 0}^N \exp(-\beta(-1/\beta \ln{N \choose N_p}))\exp(-\beta E(M, h)) \\ 
+        & = \sum_{N_p = 0}^N \exp(-\beta(E(M, h)  -1/\beta \ln{N \choose N_p}))
+\end{aligned}
+$$ 
+But having $N_p$ up spins forces $N - N_p$ down spins, so we might as well just sum over $M = 2N_p - N$ instead, which gives us 
+$$ 
+\begin{aligned}
+Z(h, T) & = \sum_{M} \exp(-\beta(E(M, h) - k_B T \ln{N \choose (M+N)/2})) = \sum_{M} \exp(-\beta F(M, h)) \\ 
+& F(m, h) = E(M, h) - k_B T \ln{N \choose (M+N)/2}\\
+\end{aligned}
+$$ 
+* Free energy $F(h, T) = -k_B T \ln Z(h, T) = \min_m(F(m, h))$
