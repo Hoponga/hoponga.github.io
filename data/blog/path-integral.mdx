@@ -1,0 +1,81 @@
+---
+title: Path Integral Formulation of Quantum Mechanics
+date: '2024-09-15'
+tags: ['physics']
+draft: false
+summary: 'self explanatory title'
+---
+Source: Quantum Field Theory of Many-Body Systems by Xiao-gang wen 
+
+Some nice quotes from the preface: 
+
+> After reading this book, I hope, instead of a feeling of completeness, readers
+> will have a feeling of emptiness. After one-hundred years of condensed matter theory, which offers us so much, we still know so little about the richness of nature.
+> However, instead of being disappointed, I hope that readers are excited by our
+> incomplete understanding. It means that the interesting and exciting time of condensed matter theory is still ahead of us, rather than behind us. 
+
+> Nature's richness is not bounded by quantum field theory.
+
+The first chapter makes it clear that the main goal of condensed matter physics is to offer theories for collective behavior as a tractable alternative to bashing out the Schrodinger equation for millions of particles, which
+though may give a complete description of the system, would be too complex to even think about solving given the entire age of the universe. As a really pretty example, phonons emerge as "particle-like" collective behavior with simple 
+interaction laws between them. One idea proposed is that all "particles" are actually just manifestations of low-energy collective excitations given by some even more fundamental theory. 
+
+**TODO: What are Goldstone modes and spontaneous symmetry breaking?**
+
+## Path Integral 
+
+Recall the time evolution operator, $U(t_b, t_a) = e^{-i(t_b - t_a)H}$. Given the coordinate basis for a 1-d system, the matrix elements of $U$ in the coordinate basis are $iG(x_b, t_b, x_a, t_a) = \langle x_b | U(t_b, t_a) | x_a \rangle$, where $G$ is our full propagator. 
+
+The propagator is the central device behind path integrals. In finding the amplitude of some particle going from position $q_I$ to $q_F$, we want to sum over all possible paths, each path being composed of N "line segments" each with time interval $\delta t$ such that 
+$$ 
+\begin{aligned}
+    \langle q_I |e^{iHT} q_J \rangle &= \langle q_I | e^{i H \delta t} e^{i H \delta t} \cdots e^{i H \delta t} | q_I \rangle  
+\end{aligned}
+$$
+Then we do some goomba expansions with $\int dq | q \rangle \langle q | = 1$, so our expression becomes 
+$$
+\begin{aligned}
+    \langle q_I |e^{iHT} q_J \rangle &= (\prod \int dq) \langle q_f | e^{i H \delta t} | q_{N-1} \rangle \langle q_{N-1} | e^{i H \delta t} | q_{N-2} \rangle \cdots \langle q_I | e^{i H \delta t}| q_I \rangle
+\end{aligned}
+$$
+
+I'm now realizing there's a bunch of annoying algebra between this and the final result, so Imma just write it down
+
+$$
+\begin{aligned}
+    \langle q_F | e^{-i HT} | q_I \rangle = \int Dq(t) e^{i \int_0^T dt (\frac{1}{2}m \dot{q}^2 - V(q))}
+\end{aligned}
+$$ 
+and that thingy at the top of the $e$ is just the Lagrangian for our Hamiltonian $H$ and $Dq(t)$ integrates over all possible paths. 
+
+"We count on the path integral to converge because the oscillatory phase factors from different paths tend to cancel out" -- wat? 
+
+
+### The Continuum Limit and FIELDS! 
+Ok now suppose we had $N$ particles. Then, we can easily generalize $H = \sum_a \frac{1}{2m_a} \hat{p}_a^2 + V(\hat{q}_1, \hat{q}_2, \cdots, \hat{q}_N)$, and integrate over all possible paths.
+
+Now, we get $Z = \langle 0 | e^{-iHT} | 0 \rangle = \int Dq(t) e^{i S(q)}$, where 
+
+$S(q) = \int_0^T dt (\sum_a\frac{1}{2}m_a \dot{q}_a^2 - V(q_1, q_2, \cdots, q_N))$. Suppose we have some chain-of-springs-like system where pairs of particles have quadratic potential interactions, so our 
+potential is $V(q_1, q_2, \cdots, q_N)  = \sum_{ab} \frac{1}{2} K_{ab}(q_a - q_b)^2 + \cdots$ (Zee calls this a "mattress"...). We care about scales much larger than lattice spacing, so lets take the "continuum limit:" $l \xrightarrow{} 0$. 
+
+Now, our discrete points $q_a$ become a continuous function over position $\vec{x}$, so we get a function $q(t, \vec{x})$. By tradition, we replace the letter $q$ with $\phi$, which we then call our **field**. 
+
+TODO: Link Kardar's note to this -- Zee gives a much clearer description of what fields are. How do our terms transform in this limit? 
+$$ 
+\begin{aligned}
+    \sum_a \frac{1}{2}m_a(\dot{q}_a^2) \mapsto \int d^2 x \frac{1}{2}\sigma (\partial \phi/\partial t)^2
+\end{aligned}
+$$
+
+where we must now introduce a mass density $\sigma$ and integrate over 2d space (ie. dimension of our system). Then, lets look at our quadratic potential interaction, assuming nearest neighbor interaction for simplicitly.
+Naturally, $(q_a - q_b)^2 \mapsto l^2 (\partial\phi/\partial x)^2$ (just linearize). Ok, then all together our action is 
+$$
+\begin{aligned}
+    S(q) \mapsto S(\phi)\int_0^T dt \int d^2 x \mathcal{L}(\phi) = \int_0^T dt \int d^2 x \frac{1}{2}(\sigma (\partial \phi/\partial t)^2 - \rho[(\frac{\partial \phi}{\partial x})^2 + (\frac{\partial \phi}{\partial y})^2]-\tau \phi^2 - \chi \phi^4 + \cdots)   
+\end{aligned}
+$$
+
+I think the higher order terms come from higher order terms in the potential? If we write $\rho = \sigma c^2$ and scale $\phi \mapsto \phi/\sqrt{\sigma}$, we get a phase-velocity like term in our Lagrangian, as 
+
+$(\partial \phi/\partial t)^2 - c^2 [(\partial \phi/\partial x)^2 + (\partial \phi/\partial y)^2]$
