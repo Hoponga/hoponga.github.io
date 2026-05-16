@@ -1,0 +1,328 @@
+---
+title: Teaching Models to Summarize Their Own Reasoning
+date: '2026-5-15'
+tags: ['ml', 'llms', 'rl', 'jiantao']
+draft: false
+summary: 'EE194 final project'
+---
+
+# Teaching Models to Summarize Their Own Reasoning
+
+Preston Fu, Dhruv Gautam, Andy Peng, Kailash Ranganathan, Yifan Wang, Jennifer Zhao  
+May 16, 2026
+
+Self-summarization gives a language model a way to reason under a hard memory budget: think for a while, compress the useful state of the computation, then continue from that compact state. In this work, we study that loop as a reinforcement learning problem. We ask two questions: **at inference time, should compute be spent on more continuations or on more summarized restart states?** And **during training, can a model learn summaries that actually help future reasoning from outcome reward alone?**
+
+Our experiments suggest that summaries are more than lossy compression. Under a fixed rollout budget, sampling multiple summaries can improve answer diversity and pass@K. A GRPO-style training loop can also optimize multi-turn reasoning with forced summaries. But the experiments reveal an important limitation: ordinary math problems often let the model place the final answer directly into the summary, which makes the benchmark too easy for studying genuine long-horizon state preservation.
+
+---
+
+> This blog post discusses work on **reinforcement learning for self-summarization under a reasoning budget**, where summaries are treated as learned reasoning states rather than hand-written compaction heuristics.
+
+---
+
+## Why long reasoning needs memory management
+
+Modern language models can generate very long reasoning traces. That sounds helpful: more tokens give the model more room to search, revise, and carry intermediate results forward.
+
+But long traces create a tension.
+
+If the entire trace stays in context, inference becomes increasingly expensive. If older reasoning is truncated, the model can lose the exact state it needs to make the next decision. This problem is especially visible in tasks that unfold over many steps: a difficult math derivation, a code repair session, a graph search problem, or any planning task where earlier decisions constrain later ones.
+
+There is a subtle but important distinction here. Long-context evaluation usually asks whether a model can **read** a large input. Long-horizon reasoning asks whether a model can **maintain and update an internal state** while generating a large amount of intermediate computation. Those are not the same problem.
+
+Self-summarization is a natural middle ground. Instead of preserving every token or discarding history wholesale, the model periodically compresses its current reasoning state into a compact summary and continues from there.
+
+The hope is not merely that the summary is shorter. The hope is that it preserves the right latent variables for the rest of the computation.
+
+---
+
+## Why not just use a fixed compaction heuristic?
+
+There are already several ways to shrink context.
+
+**Reasoning-cache-style methods** preserve intermediate reasoning or summary-like states so future computation can condition on them. This can be attractive because compacted states can be reused, and training can sometimes happen at shorter sequence lengths. But the compressed state is not always optimized for its downstream value as a future reasoning state.
+
+**Periodic self-summarization**, as used in long-context agents, simply triggers a summary when a token budget is reached. This is practical, but it leaves a hard question unanswered: _what exactly should the summary contain?_ A generic instruction like “summarize the conversation” is underspecified for reasoning. The model may preserve surface details while dropping the one constraint that later determines success.
+
+**Memory-object approaches**, where the model decides when to write compact memories, move in the right direction because compaction points are often semantic: after finishing a subproblem, ruling out a branch, or updating a plan. But these methods often depend on hand-designed supervision for what memories should look like.
+
+Our starting point is different. Instead of supervising summaries directly, we ask whether a model can learn them from the same signal that ultimately matters: **did the whole trajectory solve the task?**
+
+---
+
+## A simple setup: reason, summarize, continue
+
+Let $x$ be the original problem. At turn $t$, the model receives the original prompt and its current self-summary $s_{t-1}$. It then generates a reasoning block $r_t$ with a maximum length of $B$ tokens.
+
+If the model produces a final answer, the trajectory ends. Otherwise, we force it to write a new summary $s_t$, and the next turn begins from $(x, s_t)$ rather than from the entire previous trace.
+
+A trajectory therefore looks like
+
+\[
+\tau = (x, r_1, s_1, r_2, s_2, \ldots, r_T).
+\]
+
+In the experiments, the reasoning budget is
+
+\[
+B = 1024
+\]
+
+tokens before forced summarization, with up to five reasoning turns.
+
+This design intentionally simplifies real compaction. A fixed cutoff is not how an ideal system should behave forever. But it gives a controlled environment where summaries matter, because past reasoning is repeatedly removed from the active context and replaced by a compact state.
+
+The central question becomes:
+
+> When a model must continue from a summary rather than from its full reasoning trace, can that summary become a useful object of optimization?
+
+---
+
+## Inference first: summaries as branching states
+
+Before training with reinforcement learning, we can ask a simpler question. Suppose summaries are generated by the base model. Are they useful restart states at inference time?
+
+If summaries were merely lossy compression, then sampling more of them should not help much. But if different summaries preserve different partial strategies, then they might serve as _branch points_ for future reasoning.
+
+The paper studies this under a fixed sampling budget:
+
+\[
+N \cdot K = 32.
+\]
+
+Here:
+
+- $N$ is the number of summarized states sampled at a given compaction stage.
+- $K$ is the number of long continuations generated from each summary.
+
+So one extreme is $N=1, K=32$: choose one summary and spend all compute exploring continuations from that single state. Another extreme is $N=32, K=1$: sample many summarized states and generate only one continuation from each.
+
+The experiment asks which allocation is more useful.
+
+![Best-of-N pass@1 and pass@32 across compaction stages.](/static/images/blogs/ee194-blogpost/figure2_summary_diversity.png)
+
+**Figure 1.** Under a fixed $N \cdot K = 32$ rollout budget, sampling multiple summary states can improve continuation quality and especially answer diversity, reflected in stronger pass@32.
+
+Two patterns stand out.
+
+First, **later summaries are often better continuation states**. That is intuitive: a summary after several reasoning stages can contain more accumulated structure, intermediate results, and partial progress than a summary produced earlier.
+
+Second, and more interestingly, **spreading compute across multiple summaries can outperform putting all compute behind a single summarized state**. This means the summary itself is not just a memory-saving artifact. It changes the distribution of future reasoning.
+
+A summary can steer the continuation toward one algebraic route instead of another, one interpretation of the problem instead of another, one partial search frontier instead of another. If several summaries preserve different viable trajectories, answer diversity increases.
+
+This is an important shift in perspective. A summary is not merely a compressed transcript. It is an **active reasoning state**.
+
+---
+
+## Training summaries with RL
+
+The inference experiment suggests that summaries matter. The next step is to train them.
+
+We use a GRPO-style objective over trajectories that may contain multiple reasoning blocks and multiple summaries. For each problem $x$, the policy samples a group of trajectories
+
+\[
+\tau_1, \tau_2, \ldots, \tau_G.
+\]
+
+Each trajectory receives a final reward $R_j$ based on whether its extracted answer is correct. GRPO then computes a group-relative advantage
+
+\[
+A_j = \frac{R_j - \mu_R}{\sigma_R + \epsilon}.
+\]
+
+The crucial design choice is that **the same trajectory-level advantage is assigned to every policy-generated token in that rollout**, including both reasoning tokens and summary tokens.
+
+That may sound blunt, but it is the key credit-assignment mechanism. A summary is not graded for sounding concise or well-structured. It is reinforced when it helps later reasoning succeed.
+
+In practice, each trajectory follows this loop:
+
+1. Start from the original problem and the current summary.
+2. Generate up to 1024 reasoning tokens.
+3. If there is a final answer, stop.
+4. Otherwise, generate a new self-summary.
+5. Continue from the original problem plus that summary.
+6. Score the final answer and update the policy with GRPO.
+
+The summary tokens are therefore part of the policy’s action sequence. They matter because they define the context that future reasoning sees.
+
+A good summary should receive positive credit when it preserves a useful intermediate state. A bad summary should receive negative credit when it erases a necessary constraint or introduces a misleading one.
+
+This is the core promise of RL self-summarization: **the model can discover what information is worth preserving without a hand-written template for what a “good summary” looks like.**
+
+---
+
+## What happens when we actually train?
+
+The training curves show that the setup works mechanically. The model improves on math reasoning accuracy under the forced chunking budget, even though its reasoning is repeatedly interrupted by summarization.
+
+At the same time, the average number of summaries per trajectory stays nonzero throughout training. So the budget is not inactive. The model really is operating in a multi-turn, summary-conditioned regime rather than quietly solving everything before the first cutoff.
+
+![GRPO training dynamics.](/static/blog/ee194-blogpost/images/figure3_grpo_training_dynamics.png)
+
+**Figure 2.** Validation accuracy rises during GRPO training, while the mean number of summaries per trajectory confirms that forced compaction remains active.
+
+This matters because it establishes that the learning loop is viable:
+
+- trajectories can alternate between reasoning and summarization,
+- final-answer rewards can still train the policy,
+- and the model can improve despite repeatedly losing access to its full earlier scratchpad.
+
+But that is only half the story.
+
+---
+
+## The loophole: math sometimes lets summaries cheat
+
+The qualitative examples expose the main weakness of the experimental environment.
+
+In ordinary math problems, the model may discover the final answer before the first summary is written. Once that happens, the easiest useful “summary” is often not a compressed reasoning state at all. It is simply a place to store the answer.
+
+![Example of a learned summary that directly carries the final answer.](/static/images/blogs/ee194-blogpost/figure4_summary_shortcut.png)
+
+**Figure 3.** A learned summary on a math problem can directly include the final answer, bypassing the harder problem of preserving the intermediate reasoning state.
+
+This behavior is not necessarily a failure of the RL algorithm. It is a failure of the benchmark to force the right kind of memory.
+
+If outcome reward only cares whether the trajectory ends correctly, it has no reason to prefer
+
+- a summary that preserves derivations,
+- a summary that records open subgoals,
+- or a summary that maintains reusable state,
+
+when a much easier shortcut is available: copy the answer forward.
+
+So the right conclusion is not “self-summarization failed.” The right conclusion is that **math is often too weak a benchmark for studying long-horizon summary quality**.
+
+A meaningful benchmark should make the value of the summary depend on future decisions. The summary should preserve state that is not itself the final answer.
+
+---
+
+## What should a better benchmark look like?
+
+The paper argues for tasks where progress unfolds over many stages and intermediate state cannot be replaced by a one-line answer.
+
+### Multi-hop QA
+
+Multi-hop question answering is a useful first step. The model must collect and combine facts across context, and a summary can preserve those facts before the final answer is written. But many examples still collapse into remembering a small number of extracted facts, so multi-hop QA may not fully stress iterative compaction.
+
+### Sudoku
+
+Sudoku is a stronger state-preservation benchmark. A useful summary must track the board, candidate digits, row and column constraints, and deductions made so far. Drop one candidate or misstate one filled cell, and future reasoning can fail.
+
+### WikiRace
+
+WikiRace tests search-state compression. The model must navigate from one Wikipedia page to another by selecting links. A good summary should preserve visited pages, promising semantic bridges, failed paths, and the target. This starts to resemble long-horizon agent behavior, where the model repeatedly chooses actions under uncertainty.
+
+### Chess-like planning
+
+Chess tests exact symbolic state plus strategic intent. A summary must preserve the board, legal moves, threats, and plans. A single corrupted fact can invalidate the rest of the continuation. That makes chess a harsh but useful stress test for compaction.
+
+Across all four settings, the common requirement is the same:
+
+> A good summary should preserve the evolving state of a computation, not merely leak its final answer.
+
+---
+
+## How do we tell whether a summary preserved the right information?
+
+Final task accuracy is necessary, but it is not sufficient. If a trajectory succeeds, we still do not know whether the summary preserved the important state, whether later reasoning recovered from a bad summary, or whether the summary took a shortcut.
+
+The paper proposes several diagnostics.
+
+### Full-context versus summary-conditioned KL
+
+Suppose $h_i$ is the full reasoning prefix before compaction, and $s_i$ is the summary that replaces it. We can compare the model’s predicted future-token distributions under the full prefix and under the summary-conditioned state:
+
+\[
+\mathrm{Gap}(i)
+=
+\sum*{t=1}^{H}
+D*{\mathrm{KL}}
+\left(
+\pi(\cdot \mid h*i, y*{<t})
+\;\Vert\;
+\pi(\cdot \mid s*i, y*{<t})
+\right).
+\]
+
+A low gap suggests that the summary preserves the information needed to continue similarly to the full-context model. A high gap suggests that compaction has meaningfully changed what the model expects to do next.
+
+This is appealing because it evaluates the summary as a replacement for context, not as a standalone piece of prose.
+
+### Token predictability
+
+The paper also discusses token-level predictability. Low-probability tokens often appear around moments of revision or reconsideration: phrases like “wait,” “actually,” or a sudden branch correction. Those moments may correspond to real changes in the reasoning state.
+
+But predictability is not the same as importance. A low-probability token can be a mistake, and a high-probability token can still contain a crucial constraint. So the stronger test is intervention-based: remove, compress, or perturb a segment and measure whether future likelihood or task success changes.
+
+### Hidden-state metrics
+
+One can also compare internal representations before and after summarization, for example using cosine distance or L2 hidden-state loss. These metrics may detect representational drift, but they are harder to interpret than behavioral measures like KL and final task performance.
+
+The broader point is that self-summarization needs **diagnostics of information preservation**, not just reward curves.
+
+---
+
+## A new compute axis: summaries versus continuations
+
+One of the most interesting implications of the inference experiment is that compute allocation itself becomes a design choice.
+
+Traditional best-of-$N$ reasoning spends more compute by sampling more independent continuations. Summary branching introduces another option: sample several compressed intermediate states, then continue from each of them.
+
+That creates a two-level search structure:
+
+1. diversify the reasoning state through multiple summaries,
+2. diversify the final completion through multiple continuations.
+
+The fixed-budget experiment suggests that the first level can matter a lot. If summaries preserve meaningfully different partial strategies, then branching at compaction points may be a more efficient way to explore than spending all compute after one chosen summary.
+
+This does not prove a universally optimal allocation rule. But it does suggest that **summary diversity is a scaling axis**, not just an implementation detail.
+
+---
+
+## The trigger should eventually be learned too
+
+A fixed 1024-token cutoff is experimentally clean, but semantically arbitrary. Real reasoning does not naturally divide itself into equal-sized chunks.
+
+A better system might learn to summarize after
+
+- finishing a subproblem,
+- ruling out a branch,
+- finding a contradiction,
+- updating a plan,
+- or committing to a search direction.
+
+In other words, the model should not only learn **what** to write in a summary. It should also learn **when** summarization becomes useful.
+
+That pushes self-summarization closer to adaptive memory management: a model deciding how to compress its own computation as the task unfolds.
+
+---
+
+## What’s next?
+
+This project makes a simple point with surprisingly broad implications: **summaries can be trained as reasoning states**.
+
+The inference experiments show that summary diversity can improve downstream answer diversity under a fixed rollout budget. The GRPO experiments show that a model can be trained through repeated reasoning-summary cycles with final reward. And the failure mode on math tasks clarifies what future benchmarks need to test: not answer transport, but state preservation.
+
+There are several natural next steps:
+
+- move from ordinary math to stateful environments such as Sudoku, WikiRace, and chess-like planning,
+- combine sparse outcome reward with denser compaction diagnostics such as full-context versus summary-conditioned KL,
+- study learned summarization triggers instead of fixed token cutoffs,
+- and measure how summary diversity interacts with inference-time compute allocation.
+
+Long-context reasoning will not be solved simply by making the context window larger. At some point, models need to decide what part of their own computation is worth keeping. Self-summarization is one way to make that decision explicit, trainable, and measurable.
+
+---
+
+## Citation
+
+```bibtex
+@misc{fu2026selfsummarization,
+  title={Reinforcement Learning for Self-Summarization under a Reasoning Budget},
+  author={Preston Fu and Dhruv Gautam and Andy Peng and Kailash Ranganathan and Yifan Wang and Jennifer Zhao},
+  year={2026}
+}
+```
