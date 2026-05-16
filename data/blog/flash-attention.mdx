@@ -1,0 +1,124 @@
+---
+title: Following CS336
+date: '2026-3-24'
+tags: ['ml', 'llms', 'systems']
+draft: false
+summary: 'Building LLMs from Scratch course'
+---
+
+This post is my solutions and ongoing notes for the Stanford CS336 course on building LLMs from scratch.
+
+# Assignment 1
+
+The first assignment is all about building a simple pre-training pipeline from scratch. The components are
+
+- A BPE learner to find token strings given a desired vocab size with the bpe merging algorithm
+- A tokenizer built on the trained BPE model
+- Dataloader to process and tokenize some pre-training corpus (in this case TinyWebStories)
+- All the PyTorch code for the actual transformer architecture + optimizer/training loop.
+
+This assignment was pretty self-explanatory, but I had never really dug into how tokenizers actually work so it was cool to implement BPE from scratch. I only have some very rudimentary multiprocessing code for "chunking" a large text file and processing each one in parallel for BPE, so it'd be cool as a future todo to implement some distributed data pipeline that scales well.
+
+Some results for model trained on TinyWebStories!
+
+<div style={{ display: 'flex', gap: '1rem' }}>
+  <img src="/static/images/blogs/flash_attention/train_plot.png" alt="first" width="50%" />
+  <img src="/static/images/blogs/flash_attention/val_plot.png" alt="second" width="50%" />
+</div>
+
+I wrote a short script for generation -- greedy output gives pretty reasonable text.
+
+<div style={{ textAlign: 'center' }}>
+  <img
+    src="/static/images/blogs/flash_attention/sample_output.png"
+    alt="description"
+    style={{ width: '500px' }}
+  />
+</div>
+
+My code for this assignment: https://github.com/Hoponga/assignment1-basics
+
+It's really not the best and I want to create a proper pre-training library that supports a bunch of different model configs (+ Muon and some other interesting optimizers in the future) but for now this assignment was really just building the scaffolding so I can move on to the second one which is more interesting :)
+
+# Assignment 2
+
+This assignment is all about benchmarking and systems optimizations for training, in particular writing optimized kernels for the forward/backward pass as well as a DDP/sharding wrapper over the previous assignment's model.
+
+The first main step is to write a highly optimized Flash Attention kernel. But because I hadn't used Triton before, it took me a bit before actually diving into the flash attention kernel to actually learn Triton.
+
+## Writing a Triton kernel
+
+Because CUDA/C++ is more familiar, I'm trying to translate all the patterns/syntax that Triton follows to how things are done in CUDA/C++. Good thing is that the syntax is very Python/NKI esque, which brings an air of familiiarity to it.
+
+Here's an example of a simple fused row-wise softmax kernel (taken from the [Triton website](https://triton-lang.org/main/getting-started/tutorials/02-fused-softmax.html) )
+
+The "naive softmax kernel" written in Pytorch:
+
+```python
+def naive_softmax(x):
+    """Compute row-wise softmax of X using native pytorch
+
+    We subtract the maximum element in order to avoid overflows. Softmax is invariant to
+    this shift.
+    """
+    # read  MN elements ; write M  elements
+    x_max = x.max(dim=1)[0]
+
+
+    # read MN + M elements ; write MN elements
+    z = x - x_max[:, None]
+    # read  MN elements ; write MN elements
+    numerator = torch.exp(z)
+    # read  MN elements ; write M  elements
+    denominator = numerator.sum(dim=1)
+    # read MN + M elements ; write MN elements
+    ret = numerator / denominator[:, None]
+    # in total: read 5MN + 2M elements ; wrote 3MN + 2M elements
+    return ret
+```
+
+This is problematic because of the redundant gmem access pattern. In particular, the way to read a line of torch code is as an independent kernel. So there would be some input living in GMEM, the function called would launch some torch kernel, and then the output result in Python would be another tensor stored in GMEM. So this means
+
+- we first read the entirety of the X matrix (which is M by N) to calculate the row-wise max from GMEM and then write the max BACK to Gmem.
+- Then to calculate $z$, the entirety of X is read again (another MN gmem reads) along with the maxes (M)
+- to calculate the numerator, Z is now back in GMEM so yet another MN reads and writes
+
+And you get the point, that's how they get in total that $5MN + 2M$ GMEM reads and $3MN + 2M$ GMEM writes are done. The easiest way to improve on this is to bring a tile (say ROW_TILE_SIZE number of rows) to SMEM, do the whole softmax calculation, and write it back to GMEM. This can't be done in torch, but is straightforward in triton:
+
+```python
+@triton.jit
+def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols, BLOCK_SIZE: tl.constexpr,
+                   num_stages: tl.constexpr):
+    row_start = tl.program_id(0)
+    row_step = tl.num_programs(0)
+
+
+    for row_idx in tl.range(row_start, n_rows, row_step, num_stages=num_stages):
+
+        row_start_ptr = input_ptr + row_idx * input_row_stride # input_row_stride is "memory size" of one row
+        col_offsets = tl.arange(0, BLOCK_SIZE) # one row will fit in single block
+
+
+
+        input_ptrs = row_start_ptr + col_offsets # [row_start_ptr, row_start_ptr + 1, ..., row_start_ptr + BLOCK_SIZE - 1]
+
+        mask = col_offsets < n_cols
+        # each row is loaded into SRAM only ONCE
+        row = tl.load(input_ptrs, mask=mask, other=-float('inf'))
+
+        row_minus_max = row - tl.max(row, axis=0)
+        numerator = tl.exp(row_minus_max)
+        denominator = tl.sum(numerator, axis=0)
+        softmax_output = numerator / denominator
+        output_row_start_ptr = output_ptr + row_idx * output_row_stride
+        output_ptrs = output_row_start_ptr + col_offsets
+
+        # each row is stored back into SRAM only ONCE
+        tl.store(output_ptrs, softmax_output, mask=mask)
+```
+
+Right off the bat, there are some key structural differences between Triton and cuda kernels:
+
+- CUDA kernels operate at the granularity of individual threads. So you would define your gridDim, your blockDim etc. and then do `kernel<<<gridDim, blockDim>>>(...)` when launching it. Then in the kernel, you access each individual tid by doing some logic with the grid (x, y, z) and block (x, y, z)
+- In Triton, you instead operate at the granularity of blocks. So you would launch a Triton kernel by doing something like `kernel[(num_programs, 1, 1)]` where the tuple inside is a "program-id," which to my understanding is most similar to the gridDim. So when you call `pid = tl.program_id(axis = 0)` in Triton, you're actually getting the _thread block_ id, not an individual thread id.
+  - Then inside the kernel, you'll operate on all elements in the block by incorporating some sort of `tl.arange(0, BLOCK_SIZE)` logic in the function -- _this_ is where the "individual" threads would do their work, but it's not really a one-to-one comparison because that vector would be allocated amongst threads in the block in some way by the Triton compiler.
