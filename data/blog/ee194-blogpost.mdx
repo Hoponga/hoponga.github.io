@@ -59,15 +59,15 @@ If the model produces a final answer, the trajectory ends. Otherwise, we force i
 
 A trajectory therefore looks like
 
-\[
+$$
 \tau = (x, r_1, s_1, r_2, s_2, \ldots, r_T).
-\]
+$$
 
 In the experiments, the reasoning budget is
 
-\[
+$$
 B = 1024
-\]
+$$
 
 tokens before forced summarization, with up to five reasoning turns.
 
@@ -87,9 +87,9 @@ If summaries were merely lossy compression, then sampling more of them should no
 
 The paper studies this under a fixed sampling budget:
 
-\[
+$$
 N \cdot K = 32.
-\]
+$$
 
 Here:
 
@@ -122,15 +122,15 @@ The inference experiment suggests that summaries matter. The next step is to tra
 
 We use a GRPO-style objective over trajectories that may contain multiple reasoning blocks and multiple summaries. For each problem $x$, the policy samples a group of trajectories
 
-\[
+$$
 \tau_1, \tau_2, \ldots, \tau_G.
-\]
+$$
 
 Each trajectory receives a final reward $R_j$ based on whether its extracted answer is correct. GRPO then computes a group-relative advantage
 
-\[
+$$
 A_j = \frac{R_j - \mu_R}{\sigma_R + \epsilon}.
-\]
+$$
 
 The crucial design choice is that **the same trajectory-level advantage is assigned to every policy-generated token in that rollout**, including both reasoning tokens and summary tokens.
 
@@ -235,17 +235,17 @@ The paper proposes several diagnostics.
 
 Suppose $h_i$ is the full reasoning prefix before compaction, and $s_i$ is the summary that replaces it. We can compare the model’s predicted future-token distributions under the full prefix and under the summary-conditioned state:
 
-\[
+$$
 \mathrm{Gap}(i)
 =
-\sum*{t=1}^{H}
-D*{\mathrm{KL}}
+\sum_{t=1}^{H}
+D_{\mathrm{KL}}
 \left(
-\pi(\cdot \mid h*i, y*{<t})
+\pi(\cdot \mid h_i, y_{<t})
 \;\Vert\;
-\pi(\cdot \mid s*i, y*{<t})
+\pi(\cdot \mid s_i, y_{<t})
 \right).
-\]
+$$
 
 A low gap suggests that the summary preserves the information needed to continue similarly to the full-context model. A high gap suggests that compaction has meaningfully changed what the model expects to do next.
 
