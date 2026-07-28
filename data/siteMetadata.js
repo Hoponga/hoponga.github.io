@@ -3,7 +3,7 @@ const siteMetadata = {
   title: 'weeeebsite',
   author: 'Kailash Ranganathan',
   headerTitle: 'home',
-  description: 'i am a student @ uc berkeley eecs. go to "about" to learn more about me',
+  description: 'Welcome to my website! Go to about page to learn more about me',
   language: 'en-us',
   theme: 'system', // system, dark or light
   siteUrl: 'https://tailwind-nextjs-starter-blog.vercel.app',

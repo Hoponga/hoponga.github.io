@@ -1,0 +1,44 @@
+---
+title: How to Distribute ML?
+date: '2026-6-02'
+tags: ['ml', 'llms', 'dist-systems', 'scalable-ai']
+draft: true
+summary: Deep Dive into the Inner Workings of Large-Scale Model Training
+---
+
+Throughout the semester (and honestly in general for doing LLM post-training), I've been working with all these huge distributed training libraries like Megatron,
+Ray, NemoRL, for abstracting away a lot of the model sharding and distributed communication logic that goes into doing large-scale training. It's only recently that I've started to dive into the
+inner workings of how these libraries work, and my main takeaways are that behind all the huge config plumbing and files upon files of wrapper classes, the RL orchestration logic is pretty standard:
+
+- You have some sort of RayWorkerGroup which broadcasts batches to a set of TrainWorkers (each one is a Ray actor resident on a particular GPU) that each compute their forward/backward passes via some training backend (Megatron/FSDP)
+- For communicating with inference engine, there is some sort of InferenceEngine wrapper class which handles sending generation requests (POSTs) to the inference engine and collating results, as well as posting the RPCs for weight syncs. Similar to
+  how you have a class for hosting a group of training Ray actors, there will be some "rollout group" class that orchestrates all the individual inference engines.
+- The remaining component is the actual driver code which goes to some class/code segment that hosts the actual training loop (sample(), calculate_advantages(), forward_backward(), optim_step(), weight_sync(), almost like Tinker)
+
+Of course, the above is an oversimplification. You have so much more moving parts related to agentic loops/tool calls, sandbox environments, quantization, etc. But this is the main common structure that every RL library seems to take.
+
+Unfortunately, these industry repos have gotten so huge that it's easy to lose sight of the more fundamental patterns that are used in model training. In my quest to find some more "digestible" content to get a better intuition for the distributed patterns used, I found exactly what I was looking for
+with the [NanoRLHF](https://github.com/hyunwoongko/nanoRLHF) repository (thank you @hyunwoongko for creating this amazing resource!) which provides compact implementations of Megatron, Ray, VLLM, and a RL training library.
+
+# NanoRLHF Overview
+
+NanoRLHF is decomposed into a few different individual packages:
+
+- NanoRay, a Python-based implementation of the Ray distributed library
+- NanoTron, a model-parallel training library
+- NanoVLLM,
+
+{/\* ## NanoRay
+
+Before going into the implementation of NanoRay, it's helpful to overview the initial [Ray design](https://arxiv.org/pdf/1712.05889).
+
+From the user's perspective, the Ray programming model defines remote actors and functions.
+
+The architecture of Ray also enables much more concurrency compared to prior distributed systems. The main advancement of Ray over prior systems is in its ability to schedule many more tasks per second via
+its "bottom-up distributed scheduler." Rather than have a centralized scheduler
+
+![Ray architecture](/static/images/blogs/distributed-ml/ray-architecture.png)
+
+The Ray programming model is via remote actors and functions. \*/}
+
+## Nanotron Overview

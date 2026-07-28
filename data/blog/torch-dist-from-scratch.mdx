@@ -1,0 +1,180 @@
+---
+title: minidist
+date: '2026-6-07'
+tags: ['ml', 'llms', 'dist-systems', 'scalable-ai']
+draft: false
+summary: Writing torch.distributed from scratch
+---
+
+There's a particular frustration that comes with using torch.distributed and getting obscure NCCL bugs which either take you down a
+rabbit hole of StackOverflow/Github issues, or in the modern day require hours of Claude spinning until you realize some environment variable wasn't set properly and breaking everything, or your rank/world-size calculation was wrong.
+Or, you keep wondering why your 8 GPU job is hanging only to realize your lab cluster only connects pairs of GPUs together, so of course an 8-GPU sync would hang! The underlying problem in all these cases is that I've never asked how torch.distributed works under the hood, or even
+the inner workings of how NCCL works.
+
+And I'm not about to go through the github of PyTorch to learn this, so I figured I'll try and rewrite torch.distributed from scratch! Or, not from scratch, but rather from NCCL, which honestly already provides methods to implement a lot of the torch.distributed collectives. So mainly this is a project
+to understand what is necessary on TOP of NCCL to enable Pytorch-distributed type features.
+
+### High-Level Goal
+
+As a high-level goal we should create a library that's capable of doing the torch.distributed basics. For example, we should be able to do collectives:
+
+```python
+import torch
+import minidist as dist
+
+
+def main():
+    dist.init_process_group(backend="nccl")
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    local_rank = int(os.environ["LOCAL_RANK"])
+    tensor = torch.tensor([rank + 1.0]).to("cuda")
+    print(f"[rank {rank}] before all_reduce: {tensor.item()}")
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    print(f"[rank {rank} sees tensor {tensor.item()}]")
+    dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+as well as p2p communication:
+
+```python
+import torch
+import minidist as dist
+
+
+def main():
+    dist.init_process_group(backend="nccl")
+
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    assert world_size == 2
+
+    if rank == 0:
+        tensor = torch.tensor([42])
+        print(f"[rank 0] sending {tensor.item()} to rank 1")
+        dist.send(tensor, dst=1)
+    else:
+        tensor = torch.zeros(1)
+        dist.recv(tensor, src=0)
+        print(f"[rank 1] received {tensor.item()} from rank 0")
+
+    dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### What I will NOT do:
+
+Maybe I'll look into this stuff in the future, but I am not going to:
+
+- rewrite the torch autograd engine from scratch. I [have](https://github.com/Hoponga/dlsys) looked into this before but it's not the focus of this project, which is mainly to figure out how the actual distributed communication + synchronziation is done above NCCL.
+- Implement NCCL from scratch. I actually hope that I can get to this in the future so I can learn more about GPUDirect RDMA/P2P, but I'm going to try and finish this first.
+
+# Design
+
+I'll be working on top of [this Github repo](https://github.com/Hoponga/minidist) if you don't wanna read any of this and just want to see code.
+
+At a high level, I want to start by implementing the following services:
+
+## Intro to NCCL
+
+Truth be told, I've never really written NCCL code before and so the first step is getting pretty familiar with the programming model. Lets start with a simple all-reduce script that does the same as the above, taken from the official documentation [1]:
+
+<details>
+<summary> Show code </summary>
+```c++
+#include <stdlib.h>
+#include <stdio.h>
+#include "cuda_runtime.h"
+#include "nccl.h"
+
+#define CUDACHECK(cmd) do { \
+ cudaError_t err = cmd; \
+ if (err != cudaSuccess) { \
+ printf("Failed: Cuda error %s:%d '%s'\n", \
+ **FILE**,**LINE**,cudaGetErrorString(err)); \
+ exit(EXIT_FAILURE); \
+ } \
+} while(0)
+
+#define NCCLCHECK(cmd) do { \
+ ncclResult_t res = cmd; \
+ if (res != ncclSuccess) { \
+ printf("Failed, NCCL error %s:%d '%s'\n", \
+ **FILE**,**LINE**,ncclGetErrorString(res)); \
+ exit(EXIT_FAILURE); \
+ } \
+} while(0)
+
+int main(int argc, char\* argv[])
+{
+ncclComm_t comms[4];
+
+//managing 4 devices
+int nDev = 4;
+int size = 32*1024*1024;
+int devs[4] = { 0, 1, 2, 3 };
+
+//allocating and initializing device buffers
+float** sendbuff = (float**)malloc(nDev _ sizeof(float_));
+float** recvbuff = (float**)malloc(nDev _ sizeof(float_));
+cudaStream_t* s = (cudaStream_t*)malloc(sizeof(cudaStream_t)\*nDev);
+
+for (int i = 0; i < nDev; ++i) {
+CUDACHECK(cudaSetDevice(i));
+CUDACHECK(cudaMalloc((void**)sendbuff + i, size \* sizeof(float)));
+CUDACHECK(cudaMalloc((void**)recvbuff + i, size _ sizeof(float)));
+CUDACHECK(cudaMemset(sendbuff[i], 1, size _ sizeof(float)));
+CUDACHECK(cudaMemset(recvbuff[i], 0, size \* sizeof(float)));
+CUDACHECK(cudaStreamCreate(s+i));
+}
+
+//initializing NCCL
+NCCLCHECK(ncclCommInitAll(comms, nDev, devs));
+
+//calling NCCL communication API. Group API is required when using
+//multiple devices per thread
+NCCLCHECK(ncclGroupStart());
+for (int i = 0; i < nDev; ++i)
+NCCLCHECK(ncclAllReduce((const void*)sendbuff[i], (void*)recvbuff[i], size, ncclFloat, ncclSum,
+comms[i], s[i]));
+NCCLCHECK(ncclGroupEnd());
+
+//synchronizing on CUDA streams to wait for completion of NCCL operation
+for (int i = 0; i < nDev; ++i) {
+CUDACHECK(cudaSetDevice(i));
+CUDACHECK(cudaStreamSynchronize(s[i]));
+}
+
+//free device buffers
+for (int i = 0; i < nDev; ++i) {
+CUDACHECK(cudaSetDevice(i));
+CUDACHECK(cudaFree(sendbuff[i]));
+CUDACHECK(cudaFree(recvbuff[i]));
+}
+
+//finalizing NCCL
+for(int i = 0; i < nDev; ++i)
+ncclCommDestroy(comms[i]);
+
+printf("Success \n");
+return 0;
+}
+
+```
+</details>
+There's a couple things to look out for here:
+- `cudaSetDevice()` fixes each host
+- For each GPU, we explicitly cuda Malloc its send and receive buffers,
+
+
+
+# References
+[1] https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/examples.html
+```

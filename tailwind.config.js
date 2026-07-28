@@ -22,7 +22,7 @@ module.exports = {
         14: '3.5rem',
       },
       fontFamily: {
-        sans: ['"Proxima Nova"', ...fontFamily.sans],
+        sans: ['et-book', 'Palatino', '"Palatino Linotype"', 'Georgia', 'serif'],
       },
       colors: {
         primary: colors.pink,
@@ -36,6 +36,9 @@ module.exports = {
       typography: ({ theme }) => ({
         DEFAULT: {
           css: {
+            color: theme('colors.gray.900'),
+            fontSize: '1.2rem',
+            lineHeight: '1.9',
             a: {
               color: theme('colors.primary.500'),
               '&:hover': {
@@ -57,6 +60,7 @@ module.exports = {
         },
         invert: {
           css: {
+            color: theme('colors.gray.100'),
             a: {
               color: theme('colors.primary.500'),
               '&:hover': {
