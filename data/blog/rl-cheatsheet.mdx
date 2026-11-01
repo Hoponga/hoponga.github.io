@@ -1,0 +1,401 @@
+---
+title: RL Cheatsheet
+date: '2026-8-01'
+tags: ['ml', 'llms', 'rl']
+draft: false
+summary: My cheatsheet for reinforcement learning
+---
+
+As I've been getting back into RL through work and whatnot, I've realized that I can't really find a nice, concise resource for "modern RL" online. Back in the day, I would use
+[OpenAI spinning up guide](https://spinningup.openai.com/) would be exactly the type of resource I'm looking for, but now RL has progressed way past what it covers and I'm in need of something more up-to-date.
+I've probably taken notes on the same RL concepts over a dozen times (just to forget everything for the next time), and so I figured I might as well consolidate these notes once and for all. I don't think they will be nice or concise, so it's
+entirely up to you if you decide to use this as a resource or not :)
+
+If anyone else is looking at this, it might seem like this is just putting a bunch of disjoint concepts together. You may find that some things are barely explained at all, and some things that are seemingly obvious or unimportant
+are overexplained unnecessarily. Or I may make weird connections that don't really make any productive sense. This cheatsheet is tailored towards how I best understand things (so I'll explain things I understand less comfortably in more depth, and vice versa), so I don't guarantee it will be a good resource for everyone (or anyone)!
+
+Maybe in the future I will write this up better for general understanding, but if you see anything that's blatantly incorrect or have any comments/suggestions, please let me know!
+
+Anyways, I'll add to this as time goes on, but for now this covers the fundamentals of RL (MDPs, value/Q functions, Bellman equation, key derivations), classical RL algorithms (online, offline, off-policy), LLM RL (all the 10 million variants of GRPO), and maybe some RL infra and RL theory too.
+
+# 1. Fundamentals of RL
+
+Start with sum definitions:
+TODO: maybe talk about general online algorithms
+
+## Definitions
+
+We start with the RL problem statement. An agent lies in some environment and at each timestep, receives an observation $o_t$ that may be a subset of the true environment state $s_t$, and according to its policy $\pi$ chooses an action $a_t \sim \pi(\cdot | s_t)$. This action receives some reward $r_t$ and transitions the environment
+into state $s_{t+1}$ according to some environment dynamics $P(s_{t+1} | s_t, a_t)$.
+
+A trajectory is defined as a list of these state-action pairs $(s_0, a_0, s_1, a_1, \cdots)$ corresponding to a "path" the agent walks through the environment state space.
+
+The central axiom of RL is that the environment dynamics follow a _Markov Decision Process_: that is, $P$ is a Markovian kernel. Then, the central goal of RL is to maximize the expected return under some policy. To define this expectation, we first define the probability of a trajectory:
+
+$$
+P(\tau | \pi) = \rho_0(s_0) \prod_{t = 0}^{T-1} P(s_{t+1}|s_t, a_t) \pi(a_t | s_t)\newline
+
+J(\pi) = \mathbb{E}_{\tau \sim \pi}[R(\tau)]
+$$
+
+So the optimal policy is the one that maximizes the expected return: $\pi^* = \argmax_{\pi} J(\pi)$.
+
+**Value function**: $V^\pi(s) = \mathbb{E}_{\tau \sim \pi}[R(\tau) | s_0 = s]$, with $V^*$ being the on-policy value function under the optimal policy (if I start at $s$ and take actions according to $\pi$, what is the expected return I wil receive?)
+
+**Q-function**: $Q^\pi(s, a) = \mathbb{E}_{\tau \sim \pi}[R(\tau) | s_0 = s, a_0 = a]$ with $Q^*$ being the on-policy Q-function under the optimal policy (if I start at $s$ and take action $a$ from there, and then continue acting under policy $\pi$, what is the expected return I will receive?)
+
+Note the relationship between these: $V^\pi(s) = \mathbb{E}_{a \sim \pi}[Q^\pi(s, a)]$ -- this follows directly by iterated expectation.
+
+recall that having $Q^*$ immediately gives us the optimal policy: that at any state we sholud take action $a^*(s) = \argmax_a Q^*(s, a)$.
+
+### bellman equations
+
+Lets unroll the $V^\pi(s)$
+
+$$
+V^\pi(s)
+=
+\mathbb{E}_{\substack{a \sim \pi \\ s' \sim P}}
+\left[
+r(s,a) + \gamma V^\pi(s')
+\right],
+$$
+
+$$
+Q^\pi(s,a)
+=
+\mathbb{E}_{s' \sim P}
+\left[
+r(s,a)
++
+\gamma
+\mathbb{E}_{a' \sim \pi}
+\left[
+Q^\pi(s',a')
+\right]
+\right].
+$$
+
+## Policy Gradient
+
+Suppose we parameterize our policy with some parameters $\theta$. Then, we can treat RL as a gradient ascent problem if we can find an expression for $\nabla_\theta J(\pi_\theta)$. The policy gradient is
+
+$$
+\begin{align*}
+\nabla_\theta J(\pi_\theta) & = \nabla_\theta \mathbb{E}_{\tau \sim \pi_\theta}[R(\tau)] \\
+& = \nabla_\theta \int_\tau P(\tau | \theta) R(\tau) \\
+& =  \int_\tau \nabla_\theta P(\tau | \theta) R(\tau) \\
+& = \int_\tau P(\tau | \theta) \nabla_{\theta} \log(P(\tau | \theta)) R(\tau)\\
+& = \mathbb{E}_{\tau \sim \theta} \nabla_{\theta} \log(P(\tau | \theta)) R(\tau) \\
+\end{align*}
+$$
+
+But
+
+$$
+\begin{align*}
+\nabla_{\theta} \log(P(\tau | \theta)) & = \nabla_{\theta} \log(\rho_0(s_0) \prod_{t = 0}^{T-1} P(s_{t+1}|s_t, a_t) \pi(a_t | s_t)) =
+\nabla_{\theta} (\log \rho_0(s_0) + \sum_{t = 0}^{T-1} (\log P(s_{t+1}|s_t, a_t)  + \log \pi(a_t | s_t))) \\
+& = \nabla_{\theta} \sum_{t = 0}^{T-1} \log \pi_\theta(a_t | s_t) = \sum_{t = 0}^{T-1} \nabla_\theta \log \pi_\theta(a_t | s_t)
+\end{align*}
+$$
+
+So our final policy gradient is
+
+$$
+\nabla_\theta J(\pi_\theta) = \mathbb{E}_{\tau \sim \theta} [\sum_{t = 0}^{T-1} \nabla_\theta \log \pi_\theta(a_t | s_t) R(\tau)]
+$$
+
+the last step is to enforce causality (when we take $R(\tau) = \sum_{t = 0}^{T-1} r_t$, independence of $r_{t < k}$ from action $a_k$ implies that partial sum's expectation with grad logprob goes to zero. Proof needed!). So we end up with the expression
+
+$$
+\nabla_\theta J(\pi_\theta) = \mathbb{E}_{\tau \sim \theta} [\sum_{t = 0}^{T-1} \nabla_\theta \log \pi_\theta(a_t | s_t) \sum_{k = t}^{T-1} r(s_k, a_k) - b(s_t)]
+$$
+
+where we call that sum the "reward to go" for each step (i cheated and already added zero-bias state-dependent baseline).
+
+Using $A^{\pi_\theta}(s_t, a_t) \triangleq Q^{\pi_\theta}(s_t, a_t) - V^\pi(s_t)$ will also recover the same expectation. Proof needed for this too!
+
+Final expression:
+
+$$
+\nabla_\theta J(\pi_\theta) = \mathbb{E}_{\tau \sim \theta} [\sum_{t = 0}^{T-1} \nabla_\theta \log \pi_\theta(a_t | s_t) A^{\pi_\theta}(s_t, a_t)]
+$$
+
+### Algorithm 1: Vanilla Policy Gradient
+
+How many networks: two (one $\theta$ for policy, one $phi$ for value function)
+Type: Fully on-policy
+Vanilla policy gradient simply does gradient ascent on the above objective by doing the following training step:
+
+- collect trajectories $\mathcal{D}_k = \{\tau_i\}$ by rolling out policy $\pi(\theta_k)$
+- compute rewards to go $\hat{R}_t \triangleq \sum_{i = t}^T \gamma^{i-t}r_{i}$ for each of these trajectories
+- compute advantages using rewards to go and value network estimation $V_\phi(s_t)$. In the non-GAE case, this may just be $\hat{R}_t - V_\phi(s_t) \forall t$, but in the GAE case,
+  this would end up being recursively calculating $\hat{A}_t^{GAE} = \delta_t + (\gamma \lambda) \hat{A}_{t+1}^{GAE}$ where $\delta_t = r_t + \gamma V_\phi(s_{t+1}) - V_\phi(s_t)$
+- policy gradient estimate is $g_k = \frac{1}{|\mathcal{D}_k|} \sum_{\tau \in \mathcal{D}_k} \sum_{t = 0}^T  \nabla_\theta \log \pi_\theta(a_t | s_t) A(s_t, a_t)$
+- policy update: $\theta_k \gets \theta_k + \alpha_k g_k$
+- value function update: $\phi_k = \argmin_\phi \frac{1}{|\mathcal{D}_k| T} \sum_{\tau \in \mathcal{D}_k}\sum_{t = 0}^T(V_\phi(s_t) - R_t)^2$
+  the value function update can be thought of as "bring the value function estimate for all states as close to the observed $R_t$ for that state".
+
+# RL Algorithm Overview
+
+In this section I'll detail common RL algorithms. Broadly speaking, there are three classes of RL algorithms: on-policy, off-policy, offline (off-policy could refer to hybrid of the two). The following diagram from CS285 illustrates each pretty nicely:
+![Classes of RL algorithms](/static/images/blogs/rl/rl_algo_classes.png)
+
+- in on-policy RL, each gradient update is done with rollouts sampled from that timestep's policy $\pi_k$, after that policy update, these transitions are discarded. Hence, "on-policy"
+- in off-policy RL, each gradient update is done with a batch of transitions sampled from heterogeneous policy versions, typically through a replay buffer (hence off-policy).
+- in offline RL, transitions are sampled from a fixed dataset collected by some (potentially unknown) behavior policy $\pi_\beta$. Because these transitions were collected "offline," hence the name
+
+The tradeoff is typically that off-policy RL allows a much better sample efficiency than on-policy RL (reuse same transition for multiple gradient updates) whereas offline RL is even better in terms of sample (and potentially compute) efficiency in not requiring some sort of
+live environment, training only from a given dataset of transitions. Another popular pattern is offline pretraining to online finetuning, where "foundation models" are pretrained with a large, diverse offline dataset and finetuned for a few steps using online RL.
+
+The main downside to off-policy/offline RL is much higher training instability than with on-policy RL. For example, LLM RL basically completely relies on on-policy RL (you could argue that fully async RL is getting closer to the "off-policy" regime, but even this will bound the max policy lag of samples at some threshold rather than using a general replay buffer).
+
+## On-policy algorithms
+
+### Algorithm: TRPO
+
+### Algorithm: PPO
+
+This might be the most
+
+## Off-policy algorithms
+
+### Historical Primer (i didn't know what else to call this section)
+
+Suppose we have a finite, discrete action space. Then we can actually exactly solve for the optimal solution via DP, through _value iteration_:
+
+<details>
+<summary>Show algorithm</summary>
+- Initialize an array $V(s) = 0$ (or arbitrarily) for all states $s \in \mathcal{S}$.
+- Set $V(\text{terminal}) = 0$.
+- Select a small convergence threshold $\theta > 0$ and discount factor $\gamma \in [0, 1)$.
+- **Loop until** $\Delta < \theta$:
+    - $\Delta \leftarrow 0$
+    - **For each** state $s \in \mathcal{S}$:
+        - $v \leftarrow V(s)$
+        - $V(s) \leftarrow \max_{a \in \mathcal{A}} \sum_{s', r} p(s', r \mid s, a) \left[ r + \gamma V(s') \right]$
+        - $\Delta \leftarrow \max(\Delta, |v - V(s)|)$
+
+Then we can extract the optimal policy:
+
+- $\forall$ state $s \in \mathcal{S}$:
+  - $\pi^*(s) \leftarrow \arg\max_{a \in \mathcal{A}} \sum_{s', r} p(s', r \mid s, a) \left[ r + \gamma V(s') \right]$
+
+then we return the exact optimal state-value function $V^*$ and optimal policy $\pi^*$.
+
+</details>
+Unfortunately, even for discrete action spaces this "for each state" loop is intractable. In tetris, for example, the board is of size 10 x 22 grid locations, and a lower bound 
+on the number of states is a binary flag for whether each grid location is occupied. Already that gives us $2^{220}$ possible states, and this is just talking about possible configurations of the board.
+
+This is the problem deep Q-learning solves, by introducing a neural network to learn the Q-function. The gist is that at each step, we sample actions $\epsilon$-greedily wrt the Q-function, use these to get
+(s, a, r, s') transitions, and use these to train the Q-function neural network via regression to the targets.
+
+<details>
+<summary>Show algorithm</summary>
+## 1. Initialization
+* Initialize replay memory $D$ to capacity $N$.
+* Initialize action-value function $Q$ (online network) with random weights $\theta$.
+* Initialize target action-value function $\hat{Q}$ (target network) with weights $\theta^- = \theta$.
+* Set exploration rate $\epsilon = 1.0$, discount factor $\gamma \in [0, 1]$, and learning rate $\alpha$.
+
+## 2. Training Loop
+
+- **For each** episode = $1, M$ **do**:
+  _ Initialize environment and get initial state $s_1$.
+  _ **For each** time step $t = 1, T$ **do**:
+  _ **Action Selection ($\epsilon$-greedy):**
+  _ With probability $\epsilon$, select a random action $a_t$.
+  _ Otherwise, select $a_t = \arg\max_{a} Q(s_t, a; \theta)$.
+  _ **Execution:**
+  _ Execute action $a_t$ in environment.
+  _ Observe reward $r_t$ and next state $s_{t+1}$.
+  _ **Storage:**
+  _ Store transition $(s_t, a_t, r_t, s_{t+1})$ in replay memory $D$.
+  _ Transition to next state: $s_t \leftarrow s_{t+1}$.
+  _ **Experience Replay & Learning:**
+  _ Sample a random mini-batch of transitions $(s_i, a_i, r_i, s_{i+1})$ from $D$.
+  _ **Set Target ($y_i$):**
+  _ If $s_{i+1}$ is terminal: $y_i = r_i$
+  _ If $s_{i+1}$ is non-terminal: $y_i = r_i + \gamma \max_{a'} \hat{Q}(s_{i+1}, a'; \theta^-)$
+  _ **Gradient Descent:**
+  _ Perform a gradient descent step on the loss function $L(\theta) = \left( y_i - Q(s_i, a_i; \theta) \right)^2$ with respect to the online network parameters $\theta$.
+  _ **Target Network Update:**
+  _ Every $C$ steps, reset target network weights: $\theta^- \leftarrow \theta$.
+  _ **Decay Exploration:**
+  _ Reduce $\epsilon$ according to a decay schedule until a minimum threshold is reached.
+  </details>
+
+### Deep Deterministic Policy Gradient
+
+The main problem with deep Q-learning is that the action selection mechanism still relies on there being a finite set of actions to choose from at each random state (such that we _know_ what the argmax action is, and can $\epsilon$-greedy sample from there).
+In continuous control, we may never know what the true argmax action is. The solution for this (as with many things in life) is to instead approximate this argmax with another neural network! That is, $\max_a Q(s, a) \approx Q(s, \pi(s))$.
+
+The DDPG algorithm basically alternates between Q-function updates (using the one-step target "bootstrapping") and policy updates (which use policy gradient objective on the Q-function values).
+One detail is that the bootstrapped targets for the Q-function: that is, $y(r, s', d) = r + \gamma (1-d)(Q_{\phi})(s', \pi_\theta(s'))$, is using the same Q-function that is regressing on it, making the training signal highly unstable.
+
+As a solution to this, "target networks" that are polyak-averaged weights of Q-parameters and policy-parameters are used to calculate the targets instead, such that these targets are more "slow-evolving" than the networks themselves.
+
+Another note: the $(1-d)$ condition here accounts for the terminal state: if the transition has a "done" condition, the Q function estimate at that state should just regress to the reward given at that state rather than trying to estimate any "future" reward.
+
+The new topic that needs to be discussed here is the deterministic policy gradient: that is, what does $\nabla_\theta J$ look like when the policy $a = \mu(s)$ is a deterministic function?
+
+$$
+\nabla_{\theta^\mu} J \approx \mathbb{E}_{s_t \sim \rho^\beta} [\nabla_\theta Q(s, a | \theta^Q)|_{s = s_t, a = \mu(s_t | \theta^\mu)}]
+$$
+
+### Twin Delayed Deep Deterministic Policy Gradient
+
+This algorithm (also called TD3) might have the worst acronym in all of existence because I always get this confused with TD learning (TD(N) = update value function with N-step bellman estimate). Because technically, TD3 is a TD(0) algorithm, and it took me so long to realize the 3 in the name was because there are 3 D-starting words in the algorithm name. Maybe this is just a me problerm, but anyways
+
+The main differences in TD3 over DDPG is that two Q-functions are used instead of one, and the target is calculated via $y(r, s', d) = r + \gamma (1-d)(\min_{i = 1, 2}Q_{\phi_i})(s', \pi_\theta(s'))$ and both networks regress to this same target. This helps reduce overestimation bias. And the target policy is "smoothed" with some clipped noise or smth.
+
+It's probably helpful at this point to discuss overestimation bias.
+
+The paper [REDQ](https://arxiv.org/abs/2101.05982) extends this idea by taking an ensemble of $N$ Q-functions $Q_1, \cdots, Q_N$, and for each target choosing some subset $\mathcal{M} \subset \{1, \cdots, N\}$ of Q-functions to the take the minimum over. And same as in TD3, all the $N$ $Q$-functions will receive the same targets for their gradient updates.
+
+### Maximum-Entropy RL
+
+## Offline RL Algorithms
+
+# LLM RL
+
+What is the MDP in LLM RL? [InstructGPT](https://arxiv.org/abs/2203.02155) first formalized the token MDP for LLMs: each state is the prefix/prompt that the LLM recieves, call it $y_{1:t}$, and the action is the next token $y_t$ that the LLM decodes. So it's not really a stochastic environment at all, with the next state transition just being a deterministic $s_{t+1} = y_{1:t+1} = Concat(s_t, a_t)$.
+
+## PPO
+
+## GRPO
+
+GRPO is probably what I spend 99% of my time on currently. In this setup, we get rid of the need for a value function network, and instead replace the state baseline with a "group reward" average:
+
+One thing I have always wondered: is the group-reward baseline mathematically equivalent to the value function baseline in any way? Consider how the group reward evolves as the group size increases:
+
+$$
+R_G = \frac{1}{G}\sum_{i = 1}^G r(q, y_i) \xrightarrow{G \to \infty} \mathbb{E}_{y_i \sim \pi_\theta}[r(q, y)]
+$$
+
+Because each completion is sampled "iid" from the same LLM next-token distribution (assuming the same prompt + sampling params), the SLLN tells us that the group average will converge to the expected reward under that completion! And if $r(q, y) = \delta_{y = \text{correct answer}}$, then we can actually break down the reward term token-by-token to get
+
+$$
+\mathbb{E}_{y_i \sim \pi_\theta}[r(q, y)] = \mathbb{E}_{y_{i, t}\sim \pi_\theta(\cdot | y_{i, 1:t-1})}[\sum_{j = 1}^L r(q, y_t, y_{i, 1:t-1})]
+$$
+
+where $L$ is the sequence length. And if we say $y_{i, t} = a_t, y_{i, 1:t-1} = s_t$ as in the Token MDP formulation, then we actually have the RHS term is just the expected reward to go, aka $V(s_1)$ where $s_1$ is the "prompt state"! Note this equality holds in a very specific case, where $r(q, y_t, y_{1:t-1}) = 0 \forall t < L, r(q,y_L, y_{1:L-1}) = r(q, y_i)$. So the GRPO group average estimate converges to the expected reward to go (value function baseline) in
+the case where the reward is sparse and only given on the very last token (ie. the reward at all intermediate tokens is 0). And because LLMs don't require the heavy simulators that classical robotics would to evolve the state according to an action (the state is just a concatenation of all the actions, ie. tokens), these parallel completions are really cheap to do!
+
+So GRPO seems amazing until these assumptions break down, which is like all the time. Here are a few cases:
+
+- In classical RL, the moment you achieve some "done" condition, the episode (or "rollout" in LLM terms) is finished. This would be if your robot has achieved within $\epsilon$ of some target position in locomotion, or if your end effector has reached its end state/picked up some object. In LLM RL, however, this is different because once the LLM achieves the right answer, it's not finished! Rather, we have to wait for its max sequence length to fill up or for it to decide to put an `<eos>` token that we finish the rollout.
+  And anyone who's seen an LLM reasoning trace will notice this pattern, that frequently the LLM will get to the right answer many tokens before the end of the trace, only to either double/triple/1000x check its answer or start meandering around talking about something else (which is partially an effect of this design: imagine in robotics if rather than stopping the episode once the done condition is met, we made the policy output some "I'm done" token. My hunch is that it would do this!). And so all of a sudden the GRPO credit assignment
+  becomes a bit wonky because it could be that a whole bunch of intermediate tokens $r(q, y_t, y_{i, 1:t-1})$ have nonzero rewards.
+- Of course, if the reward is not binary sparse, then that removes the assumption from above that that all intermediate rewards were zero, which enabled us to break down the end reward into reward-to-go.
+- Even _if_ the above SLLN case holds, this isn't really practically useful. Because empirically, what GRPO ends up looking like is using very _small_ group sizes (8-16) where the group-reward baseline actually has no correlation with the true value function.
+- GRPO enables no per-token credit assignment. Your policy gradient objective $\sum_{t = 0}^T \nabla_\theta \log \pi_\theta(a_t | s_t) (Q(s_t, a_t) - V(s_t))$ attributes a _per-action_ value function baseline $V(s_t)$. But in GRPO, the per-trajectory policy gradient is $\sum_{t = 1}^{L_i} \log(\pi_\theta(a_{t, i} | s_{t, i})) A_i$, where $A_i = \frac{r_i - mean(r)}{std(r)}$ is _independent_ of each token. So in a wrong answer, every token is equally penalized, and in a right answer, every token is equally boosted. This is the same intuition GSPO uses: if tokens are effectively uniformly treated across the entire sequence, use importance sampling across the entire sequence's probability rather than per-token.
+
+# Appendix
+
+### Maybe Useful Results
+
+HI
+
+<details>
+<summary>Importance sampling via Radon-Nikodym</summary>
+Suppose we want to calculate the expectation of some random variable $X$ under a distribution $P$: $\mathbb{E}_{P}[X]$. 
+Perhaps $P$ is hard to sample from but we can sample from $Q$: for example, in offline RL we may have trajectories sampled from a behavior policy $\pi_\beta$ but we want to 
+optimize the RL objective which is an expectation under the current policy $\pi_\theta$.
+
+The easy way to motivate importance sampling is to say something like:
+
+$$
+\mathbb{E}_{P}[X] = \int x p(x) dx = \int x q(x) \frac{p(x)}{q(x)} dx = \mathbb{E}_{Q}[X \frac{P(X)}{Q(X)}]
+$$
+
+This is somewhat unsatisfying.
+
+</details>
+
+HI
+
+<details>
+<summary>KL-regularized RL objective yields an exponential-tilted distribution</summary>
+
+Many times in RL, we will encounter the following KL-regularized objective:
+
+$$
+\begin{equation*}
+\max_{p} \mathbb{E}_{x \sim p}[R(x)] \quad \text{subject to} \quad D_{\text{KL}}(p \parallel q) \le \epsilon \quad \text{and} \quad \int p(x) \, dx = 1
+\end{equation*}
+$$
+
+What is the $p$ that maximizes this objective? We can write this optimization problem as
+
+$$
+\begin{align*}
+\text{Maximize:} \quad & \int p(x) R(x) \, dx \\
+\text{Subject to:} \quad & \int p(x) \log \frac{p(x)}{q(x)} \, dx \le \epsilon \\
+& \int p(x) \, dx = 1
+\end{align*}
+$$
+
+For this, we introduce the Lagrange multiplier $\beta \ge 0$ for the inequality KL constraint and $\lambda \in \mathbb{R}$ for the equality normalization constraint:
+
+$$
+\begin{equation*}
+\mathcal{L}(p, \beta, \lambda) = \int p(x) R(x) \, dx - \beta \left( \int p(x) \log \frac{p(x)}{q(x)} \, dx - \epsilon \right) - \lambda \left( \int p(x) \, dx - 1 \right)
+\end{equation*}
+$$
+
+To maximize with respect to the function $p(x)$, we take the functional derivative $\frac{\delta \mathcal{L}}{\delta p(x)}$ and set it to zero. Using the identity $\frac{\delta}{\delta p(x)} [p(x) \log p(x)] = \log p(x) + 1$, we get:
+
+$$
+\begin{equation*}
+\frac{\delta \mathcal{L}}{\delta p(x)} = R(x) - \beta \left( \log \frac{p(x)}{q(x)} + 1 \right) - \lambda = 0
+\end{equation*}
+$$
+
+Rearranging terms allows us to express the log-ratio explicitly:
+
+$$
+\begin{align*}
+\beta \left( \log \frac{p(x)}{q(x)} + 1 \right) &= R(x) - \lambda \\
+\log \frac{p(x)}{q(x)} + 1 &= \frac{R(x) - \lambda}{\beta} \\
+\log \frac{p(x)}{q(x)} &= \frac{R(x)}{\beta} - \left( \frac{\lambda}{\beta} + 1 \right)
+\end{align*}
+$$
+
+Eliminating the logarithm yields the functional form of $p(x)$:
+
+$$
+\begin{align*}
+\frac{p(x)}{q(x)} &= \exp \left( \frac{R(x)}{\beta} \right) \exp \left( -\frac{\lambda}{\beta} - 1 \right) \\
+p(x) &= q(x) \exp \left( \frac{R(x)}{\beta} \right) \exp \left( -\frac{\lambda}{\beta} - 1 \right)
+\end{align*}
+$$
+
+Because $\exp \left( -\frac{\lambda}{\beta} - 1 \right)$ is independent of $x$, it behaves as a global scaling constant. We define this constant as $1/Z$:
+
+$$
+\begin{equation*}
+p^*(x) = \frac{1}{Z} q(x) \exp \left( \frac{R(x)}{\beta} \right)
+\end{equation*}
+$$
+
+Enforcing the normalization constraint $\int p^*(x) \, dx = 1$ gives us the explicit partition function $Z$:
+
+$$
+\begin{equation*}
+Z = \int q(x) \exp \left( \frac{R(x)}{\beta} \right) \, dx
+\end{equation*}
+$$
+
+The optimal distribution $p^*(x)$ is given by the tilted exponential distribution:
+
+$$
+\begin{equation*}
+p^*(x) = \frac{q(x) \exp \left( \frac{R(x)}{\beta} \right)}{\int q(x') \exp \left( \frac{R(x')}{\beta} \right) \, dx'}
+\end{equation*}
+$$
+
+We see this all the time in many places. For example, the "soft RL update" $\pi_{t+1} \propto \pi_t \exp(R/\beta)$
+
+</details>

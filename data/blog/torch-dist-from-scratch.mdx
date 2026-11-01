@@ -2,7 +2,7 @@
 title: minidist
 date: '2026-6-07'
 tags: ['ml', 'llms', 'dist-systems', 'scalable-ai']
-draft: true
+draft: false
 summary: Writing torch.distributed from scratch
 ---
 
@@ -167,14 +167,90 @@ printf("Success \n");
 return 0;
 }
 
-```
+````
 </details>
 There's a couple things to look out for here:
-- `cudaSetDevice()` fixes each host
-- For each GPU, we explicitly cuda Malloc its send and receive buffers,
+- `cudaSetDevice()` pins each host thread to a specific GPU. NCCL doesn't implicitly know which GPU a thread is talking to — you have to set it yourself before doing anything with that device.
+- For each GPU we explicitly allocate send and receive buffers. All_reduce is an in-place operation conceptually, but the C API makes you pass both pointers (you can pass the same pointer for both if you want in-place).
+- `ncclCommInitAll` is the easy version — it handles all the communicator setup for you when you have multiple GPUs in the same process. In the real multi-process world (one process per GPU), you'd use `ncclCommInitRank` instead, which requires every rank to pass in the same `ncclUniqueId`. That's actually most of what we need to build on top.
 
+## v0: Building on NCCL
 
+The core problem that torch.distributed solves on top of NCCL is coordination. NCCL itself has no concept of processes finding each other — you have to get every rank to agree on a shared `ncclUniqueId` before any communication can happen. That unique ID is a 128-byte blob that NCCL uses internally to set up the communicator, and every rank needs the exact same one. So the first thing we need is some way for rank 0 to generate the ID and broadcast it to everyone else.
+
+The way torch.distributed does this (and the way minidist does it) is a TCP key-value store. Rank 0 runs a small server, all ranks connect as clients, and rank 0 writes the unique ID under a known key so everyone else can read it. That's it — it's just a way to share a small blob of bytes at startup time. The store is also used for membership tracking (each rank writes a key when it's ready, everyone waits for all keys to exist before moving forward).
+
+The store implementation is pretty simple: a thread-safe dictionary with a condition variable, served over TCP with a text protocol. Commands look like `set mykey aGVsbG8=\n` where the value is base64-encoded. It's not fast but it doesn't need to be — this is control-plane stuff, and you only do it once at startup.
+
+Once coordination is sorted, the actual collective implementation is a pretty thin C++ wrapper around NCCL. The `ProcessGroupNCCL` class holds an `ncclComm_t` communicator and exposes methods for each collective:
+
+```cpp
+void ProcessGroupNCCL::all_reduce(torch::Tensor& tensor, ReduceOp op, bool async_op) {
+    validate_tensor(tensor, device_);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream(device_).stream();
+    std::lock_guard<std::mutex> lock(launch_mutex_);
+    NCCLCHECK(ncclAllReduce(
+        tensor.data_ptr(), tensor.data_ptr(),
+        tensor.numel(),  // element count, not bytes!
+        to_nccl_dtype(tensor.scalar_type()),
+        to_nccl_op(op),
+        comm_, stream));
+    if (!async_op) cudaStreamSynchronize(stream);
+}
+````
+
+A few things worth noting here. First, `tensor.numel()` not `tensor.numel() * sizeof(dtype)` — NCCL takes element counts and handles the size internally based on the dtype you pass. This is a common gotcha. Second, we're using PyTorch's current CUDA stream rather than creating our own, which means the collective gets scheduled in the same stream as whatever kernels came before it. Third, the mutex is there to serialize collective launches from multiple Python threads, though in practice v0 is single-threaded anyway.
+
+The Python layer is just pybind11 bindings over the C++ class, plus some global state to track the default process group:
+
+```python
+def init_process_group(backend, rank, world_size, local_rank, ...):
+    # rank 0 starts the store server
+    if rank == 0:
+        _store_server = TCPStoreServer(host="0.0.0.0", port=master_port)
+        _store_server.start()
+
+    # everyone connects as a client
+    _store = TCPStoreClient(host=master_addr, port=master_port)
+
+    # signal readiness and wait for everyone
+    _store.set(f"{run_id}/members/{rank}", b"1")
+    _store.wait([f"{run_id}/members/{r}" for r in range(world_size)])
+
+    # rank 0 generates the nccl unique id and shares it
+    if rank == 0:
+        nccl_id = _C.get_nccl_unique_id()
+        _store.set(f"{run_id}/groups/world/nccl_id", nccl_id)
+    nccl_id = _store.get(f"{run_id}/groups/world/nccl_id")
+
+    # initialize the communicator
+    _default_group = _C.ProcessGroupNCCL(nccl_id, rank, rank, list(range(world_size)), local_rank)
+```
+
+One thing that tripped me up initially: we release the GIL during `ncclCommInitRank` (via pybind11's `py::call_guard<py::gil_scoped_release>()`). This matters because on rank 0, the TCPStore server is running in a background thread — and if the main thread holds the GIL while blocking on `ncclCommInitRank`, the server thread can't run, so the other ranks' store reads would hang. Took me a second to figure out why rank 0 was hanging during init.
+
+The launcher is just `subprocess.Popen` in a loop, setting the right environment variables for each rank (`RANK`, `WORLD_SIZE`, `LOCAL_RANK`, `MASTER_ADDR`, `MASTER_PORT`). Nothing fancy — if any process exits non-zero, it kills the rest and propagates the error code.
+
+So putting it all together, a working all_reduce looks like:
+
+```python
+import torch
+import minidist as dist
+
+def main():
+    dist.init_process_group(backend="nccl")
+    rank = dist.get_rank()
+    tensor = torch.tensor([rank + 1.0]).cuda()
+    print(f"[rank {rank}] before: {tensor.item()}")
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    print(f"[rank {rank}] after: {tensor.item()}")  # all ranks see the sum
+
+if __name__ == "__main__":
+    main()
+```
+
+Run it with `python -m minidist.run --nproc-per-node 4 example.py` and it works. The sum across all ranks shows up correctly on every GPU.
 
 # References
+
 [1] https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/examples.html
-```
